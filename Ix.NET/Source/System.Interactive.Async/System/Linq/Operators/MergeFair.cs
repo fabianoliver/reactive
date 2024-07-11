@@ -58,7 +58,7 @@ namespace System.Linq
                         moveNextTasks[i] = enumerator.MoveNextAsync();
                     }
 
-                    var whenAny = TaskExt.WhenAny(moveNextTasks);
+                    var whenAny = ValueTaskExt.WhenAny(moveNextTasks);
 
                     int active = count;
 

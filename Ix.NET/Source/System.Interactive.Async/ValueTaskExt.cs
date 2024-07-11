@@ -1,6 +1,6 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT License.
-// See the LICENSE file in the project root for more information. 
+// See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,11 +8,10 @@ using System.Runtime.CompilerServices;
 
 namespace System.Threading.Tasks
 {
-    internal static class TaskExt
+    internal static class ValueTaskExt
     {
         public static readonly Task<bool> Never = new TaskCompletionSource<bool>().Task;
 
-#if USE_FAIR_AND_CHEAPER_MERGE
         public static WhenAnyValueTask<T> WhenAny<T>(ValueTask<T>[] tasks)
         {
             var whenAny = new WhenAnyValueTask<T>(tasks);
@@ -241,6 +240,5 @@ namespace System.Threading.Tasks
                 public void OnCompleted(Action action) => _parent.OnCompleted(action);
             }
         }
-#endif
     }
 }

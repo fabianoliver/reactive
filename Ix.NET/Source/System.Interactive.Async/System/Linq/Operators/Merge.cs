@@ -68,7 +68,7 @@ namespace System.Linq
 
                         if (!await moveNextTask.ConfigureAwait(false))
                         {
-                            moveNextTasks[index] = TaskExt.Never;
+                            moveNextTasks[index] = ValueTaskExt.Never;
 
                             // REVIEW: The original implementation did not dispose eagerly, which could lead to resource
                             //         leaks when merged with other long-running sequences.
@@ -110,7 +110,7 @@ namespace System.Linq
                         {
                             try
                             {
-                                if (moveNextTask != null && moveNextTask != TaskExt.Never)
+                                if (moveNextTask != null && moveNextTask != ValueTaskExt.Never)
                                 {
                                     _ = await moveNextTask.ConfigureAwait(false);
                                 }
