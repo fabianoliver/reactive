@@ -13,12 +13,36 @@ namespace System.Linq
     {
         /// <summary>
         /// Merges elements from all of the specified async-enumerable sequences into a single async-enumerable sequence.
+        /// The resulting enumerable will prefer values originating from sources towards the head of the <paramref name="sources"/> array.
+        /// Example: If all input sources were an infinite stream of synchronously available values, the resulting enumerable would only publish values from the first source.
+        /// </summary>
+        /// <typeparam name="TSource">The type of the elements in the source sequences.</typeparam>
+        /// <param name="sources">Async-enumerable sequences.</param>
+        /// <returns>The async-enumerable sequence that merges the elements of the async-enumerable sequences.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="sources"/> == null.</exception>
+        public static IAsyncEnumerable<TSource> MergeUnfair<TSource>(params IAsyncEnumerable<TSource>[] sources)
+        {
+            if(sources.Length <= 2)
+                return MergeBase<TSource, CompletionQueueUnfairFewSources.Factory, CompletionQueueUnfairFewSources>(sources);
+            return MergeBase<TSource, CompletionQueueUnfairManySources.Factory, CompletionQueueUnfairManySources>(sources);
+        }
+
+        /// <summary>
+        /// Merges elements from all of the specified async-enumerable sequences into a single async-enumerable sequence.
+        /// The resulting enumerable produces values in roughly the same order as they arrive from the individual sources; if multiple sources are available repeatedly synchronously, the resulting enumerable round robins between them.
         /// </summary>
         /// <typeparam name="TSource">The type of the elements in the source sequences.</typeparam>
         /// <param name="sources">Async-enumerable sequences.</param>
         /// <returns>The async-enumerable sequence that merges the elements of the async-enumerable sequences.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="sources"/> == null.</exception>
         public static IAsyncEnumerable<TSource> MergeFair<TSource>(params IAsyncEnumerable<TSource>[] sources)
+        {
+            return MergeBase<TSource, CompletionQueueFair.Factory, CompletionQueueFair>(sources);
+        }
+
+        private static IAsyncEnumerable<TSource> MergeBase<TSource, TQueueStrategyFactory, TQueueStrategy>(params IAsyncEnumerable<TSource>[] sources)
+            where TQueueStrategyFactory : struct, ICompletionQueueFactory<TQueueStrategy>
+            where TQueueStrategy : struct, ICompletionQueue
         {
             if (sources == null)
                 throw Error.ArgumentNull(nameof(sources));
@@ -44,7 +68,7 @@ namespace System.Linq
                 var enumerators = new IAsyncEnumerator<TSource>[count];
                 var moveNextTasks = new ValueTask<bool>[count];
                 var errors = default(List<Exception>);
-                var whenAny = default(ValueTaskExt.WhenAnyValueTask<bool>);
+                var whenAny = default(MergeSourceCompletionListener<bool, TQueueStrategyFactory, TQueueStrategy>);
 
                 try
                 {
@@ -100,7 +124,8 @@ namespace System.Linq
                     }
 
                     active = count;
-                    whenAny = ValueTaskExt.WhenAny(moveNextTasks);
+                    whenAny = new MergeSourceCompletionListener<bool, TQueueStrategyFactory, TQueueStrategy>(moveNextTasks);
+                    whenAny.Start();
 
                     while (active > 0)
                     {

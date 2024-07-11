@@ -27,5 +27,4 @@
   <ItemGroup>
     <ProjectReference Include="..\System.Linq.Async\System.Linq.Async.csproj" />
   </ItemGroup>
-  
 </Project>

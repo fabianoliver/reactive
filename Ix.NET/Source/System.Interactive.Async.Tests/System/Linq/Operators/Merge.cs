@@ -30,25 +30,64 @@ namespace Tests
         {
             return AsyncEnumerableEx.MergeFair(sources);
         }
+
+        [Fact]
+        public async Task CanMerge_SimpleSynchronousSequence_CorrectOrder()
+        {
+            var xs = Merge(AsyncEnumerable.Range(0,2), AsyncEnumerable.Range(10,2));
+
+            await using var en = xs.GetAsyncEnumerator();
+            await HasNextAsync(en, 10);
+            await HasNextAsync(en, 0);
+            await HasNextAsync(en, 11);
+            await HasNextAsync(en, 1);
+        }
     }
+
+    public class MergeUnfairTest : MergeTestBase
+    {
+        protected override IAsyncEnumerable<T> Merge<T>(params IAsyncEnumerable<T>[] sources)
+        {
+            return AsyncEnumerableEx.MergeUnfair(sources);
+        }
+
+        [Fact]
+        public async Task CanMerge_SimpleSynchronousSequence_CorrectOrder()
+        {
+            var xs = Merge(AsyncEnumerable.Range(0,2), AsyncEnumerable.Range(10,2));
+
+            await using var en = xs.GetAsyncEnumerator();
+            await HasNextAsync(en, 0);
+            await HasNextAsync(en, 1);
+            await HasNextAsync(en, 10);
+            await HasNextAsync(en, 11);
+            await NoNextAsync(en);
+        }
+    }
+
 
     public abstract class MergeTestBase : AsyncEnumerableExTests
     {
         protected abstract IAsyncEnumerable<T> Merge<T>(params IAsyncEnumerable<T>[] sources);
 
-        [Fact]
-        public async Task CanMerge_SimpleSynchronousSequence()
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(3)]
+        public async Task CanMerge_SimpleSynchronousSequence(int nEnumerables)
         {
-            var xs = Merge(AsyncEnumerable.Range(0,2), AsyncEnumerable.Range(10,2));
+            var xs = Merge(Enumerable.Range(0, nEnumerables).Select(x => AsyncEnumerable.Range(x * 10, 2)).ToArray());
 
             // We will test all expected values are returned, but we won't test in which order
             var capturedValues = await xs.ToHashSetAsync();
 
-            Assert.Equal(4, capturedValues.Count);
-            Assert.Contains(0, capturedValues);
-            Assert.Contains(1, capturedValues);
-            Assert.Contains(10, capturedValues);
-            Assert.Contains(11, capturedValues);
+            Assert.Equal(nEnumerables * 2, capturedValues.Count);
+            for (var i = 0; i < nEnumerables; i++)
+            {
+                var idx = i * 10;
+                Assert.Contains(idx, capturedValues);
+                Assert.Contains(idx+1, capturedValues);
+            }
         }
 
         [Fact]
@@ -155,7 +194,7 @@ namespace Tests
         {
         }
 
-        private sealed class AsyncContractVerifyingValueTaskSource : IValueTaskSource<bool>
+         private sealed class AsyncContractVerifyingValueTaskSource : IValueTaskSource<bool>
         {
             private const short ExpectedToken = 1;
 
