@@ -4,13 +4,16 @@
 
 using System;
 using System.Linq;
+
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
 
 namespace Benchmarks.System.Interactive
 {
     internal class Program
     {
-        internal static void Main()
+        internal static void Main(string[] args)
         {
             Console.WriteLine("Effective Ix-version: " + typeof(EnumerableEx).Assembly.GetName().Version);
 
@@ -25,9 +28,13 @@ namespace Benchmarks.System.Interactive
                 ,
                 typeof(MinMaxBenchmark)
 #endif
+#if CURRENT
+                ,
+                typeof(MergeBenchmark)
+#endif
             });
 
-            switcher.Run();
+            switcher.Run(args, DefaultConfig.Instance.With(Job.Default.WithCustomBuildConfiguration("Current")));
             Console.ReadLine();
         }
     }

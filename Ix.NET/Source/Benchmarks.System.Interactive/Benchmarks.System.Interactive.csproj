@@ -30,6 +30,11 @@
   <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Ix.net 3.2|AnyCPU'">
     <PackageReference Include="System.Interactive" Version="3.2.0-preview.635" />
   </ItemGroup>
+  
+  <ItemGroup>
+    <ProjectReference Include="..\System.Interactive.Async\System.Interactive.Async.csproj" />
+    <ProjectReference Include="..\System.Linq.Async\System.Linq.Async.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\System.Interactive.Tests\System.Interactive.Tests.csproj" />
