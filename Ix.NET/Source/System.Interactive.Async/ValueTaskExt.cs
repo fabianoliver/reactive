@@ -91,8 +91,7 @@ namespace System.Threading.Tasks
                     // Register a callback with the task, which will enqueue the index of the completed task
                     // for consumption by awaiters.
                     //
-
-                    _tasks[i].ConfigureAwait(false).GetAwaiter().OnCompleted(_onReady[i]);
+                    Replace(i, _tasks[i]);
                 }
             }
 
@@ -114,11 +113,16 @@ namespace System.Threading.Tasks
             /// <param name="task">The new task to store and await at the specified index.</param>
             public void Replace(int index, in ValueTask<T> task)
             {
-                Debug.Assert(_tasks[index].IsCompleted, "A task shouldn't be replaced before it has completed.");
-
                 _tasks[index] = task;
 
-                task.ConfigureAwait(false).GetAwaiter().OnCompleted(_onReady[index]);
+                if (task.IsCompleted)
+                {
+                    _onReady[index]();
+                }
+                else
+                {
+                    task.ConfigureAwait(false).GetAwaiter().OnCompleted(_onReady[index]);
+                }
             }
 
             /// <summary>
