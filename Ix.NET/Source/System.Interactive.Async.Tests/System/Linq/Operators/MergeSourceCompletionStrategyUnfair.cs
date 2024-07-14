@@ -10,11 +10,11 @@ public class MergeSourceCompletionStrategyUnfair
     [Fact]
     public async Task PrefersSourcesAtHead()
     {
-        var xs = new MergeSourceCompletionListener<int, CompletionQueueUnfairManySources.Factory, CompletionQueueUnfairManySources>(new ValueTask<int>[]
+        var xs = new MergeSourceCompletionListener<int, CompletionQueueUnfairManySources>(new ValueTask<int>[]
         {
             new ValueTask<int>(1),
             new ValueTask<int>(1000)
-        });
+        }, new CompletionQueueUnfairManySources(2));
         xs.Start();
 
         Assert.Equal(0, await xs);

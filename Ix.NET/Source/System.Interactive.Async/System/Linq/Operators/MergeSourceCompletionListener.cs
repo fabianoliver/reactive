@@ -1,67 +1,196 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace System.Linq;
 
 internal interface ICompletionQueue
 {
+    int Size { get; }
     bool IsCompleted { get; }
     int DrainCompletedIndex();
+    // May be invoked concurrently to any other function or property of this interface. An invocation for a given index X will not overlap with any other invocation of the same index X
     void OnCompleted(int index);
 }
 
-internal interface ICompletionQueueFactory<out TQueueStrategy> where TQueueStrategy : ICompletionQueue
+// Fair completion strategy optimised for exactly two input sources.
+// Compared to the more generic version, we can do without a ConcurrentQueue here, and instead represent a concurrent queue via a simple int property that represents all possible queue states
+internal struct CompletionQueueFairTwoSources : ICompletionQueue
 {
-    TQueueStrategy Create(int size);
-}
+    private int _queueState = QueueState.Empty;
 
-internal readonly struct CompletionQueueFair : ICompletionQueue
-{
-    private readonly Queue<int> _ready;
-
-    public CompletionQueueFair(int size)
+    public CompletionQueueFairTwoSources(int size)
     {
-        _ready = new Queue<int>(size); // NB: Should never exceed this length, so we won't see dynamic realloc.
+        if (size != 2)
+            throw new ArgumentException(nameof(size));
     }
+
+    public int Size => 2;
 
     public bool IsCompleted
     {
         get
         {
-            return _ready.Count > 0;
+            return Volatile.Read(ref _queueState) != 0;
         }
     }
 
     public int DrainCompletedIndex()
     {
-        return _ready.Dequeue();
+        int state;
+        int newState;
+        int result;
+        do
+        {
+            state = Volatile.Read(ref _queueState);
+            switch (state)
+            {
+                case QueueState.Zero:
+                    // [0] => Drain single element
+                    newState = QueueState.Empty;
+                    result = 0;
+                    break;
+                case QueueState.One:
+                    // [1] => Drain single element
+                    newState = QueueState.Empty;
+                    result = 1;
+                    break;
+                case QueueState.ZeroOne:
+                    // [0,1] => Drain 0, 1 remains in the queue
+                    newState = QueueState.One;
+                    result = 0;
+                    break;
+                case QueueState.OneZero:
+                    // [1,0] => Drain 1, 0 remains in the queue
+                    newState = QueueState.Zero;
+                    result = 1;
+                    break;
+                default:
+                    throw new Exception();
+            }
+        } while (Interlocked.CompareExchange(ref _queueState, newState, state) != state);
+
+        return result;
+    }
+
+    public void OnCompleted(int index)
+    {
+        switch (index)
+        {
+            case 0:
+                OnCompleted0();
+                break;
+            case 1:
+                OnCompleted1();
+                break;
+            default:
+                throw new Exception();
+        }
+    }
+
+    private void OnCompleted0()
+    {
+        int state;
+        int newState;
+        do
+        {
+            state = Volatile.Read(ref _queueState);
+            switch (state)
+            {
+                case QueueState.Empty:
+                    // Queue was empty, so new queue just contains our element [0]
+                    newState = QueueState.Zero;
+                    break;
+                case QueueState.One:
+                    // Queue was [1], so new queue should be [1,0]
+                    newState = QueueState.OneZero;
+                    break;
+                default:
+                    throw new Exception();
+            }
+        } while (Interlocked.CompareExchange(ref _queueState, newState, state) != state);
+    }
+
+    private void OnCompleted1()
+    {
+        int state;
+        int newState;
+        do
+        {
+            state = Volatile.Read(ref _queueState);
+            switch (state)
+            {
+                case QueueState.Empty:
+                    // Queue was empty, so new queue just contains our element [1]
+                    newState = QueueState.One;
+                    break;
+                case QueueState.Zero:
+                    // Queue was [0], so new queue should be [0,1]
+                    newState = QueueState.ZeroOne;
+                    break;
+                default:
+                    throw new Exception();
+            }
+        } while (Interlocked.CompareExchange(ref _queueState, newState, state) != state);
+    }
+
+    private static class QueueState
+    {
+        public const int Empty = 0;       // Represents an empty queue
+        public const int Zero = 1;        // Represents a queue with one element: Index 0
+        public const int One = 2;         // Represents a queue with one element: Index 1
+        public const int ZeroOne = 3;     // Represents a queue with two elements: [0, 1]
+        public const int OneZero = 4;     // Represents a queue with two elements: [1, 0]
+    }
+}
+
+internal readonly struct CompletionQueueFair : ICompletionQueue
+{
+    private readonly ConcurrentQueue<int> _ready;
+
+    public CompletionQueueFair(int size)
+    {
+        _ready = new ConcurrentQueue<int>();
+        Size = size;
+    }
+
+    public int Size { get; }
+
+    public bool IsCompleted
+    {
+        get
+        {
+            return !_ready.IsEmpty;
+        }
+    }
+
+    public int DrainCompletedIndex()
+    {
+        if (!_ready.TryDequeue(out var result))
+            throw new Exception();
+        return result;
     }
 
     public void OnCompleted(int index)
     {
         _ready.Enqueue(index);
     }
-
-    public struct Factory : ICompletionQueueFactory<CompletionQueueFair>
-    {
-        public CompletionQueueFair Create(int size)
-        {
-            return new CompletionQueueFair(size);
-        }
-    }
 }
-
 
 internal readonly struct CompletionQueueUnfairFewSources : ICompletionQueue
 {
-    private readonly bool[] _ready;
+    private readonly int[] _ready;
 
     public CompletionQueueUnfairFewSources(int size)
     {
-        _ready = new bool[size];
+        _ready = new int[size];
+        Size = size;
     }
+
+    public int Size { get; }
 
     public bool IsCompleted
     {
@@ -69,7 +198,7 @@ internal readonly struct CompletionQueueUnfairFewSources : ICompletionQueue
         {
             for (var i = 0; i < _ready.Length; i++)
             {
-                if (_ready[i])
+                if (Volatile.Read(ref _ready[i]) == 1)
                     return true;
             }
 
@@ -81,9 +210,8 @@ internal readonly struct CompletionQueueUnfairFewSources : ICompletionQueue
     {
         for (var i = 0; i < _ready.Length; i++)
         {
-            if (_ready[i])
+            if (Interlocked.CompareExchange(ref _ready[i], 0, 1) == 1)
             {
-                _ready[i] = false;
                 return i;
             }
         }
@@ -94,49 +222,20 @@ internal readonly struct CompletionQueueUnfairFewSources : ICompletionQueue
 
     public void OnCompleted(int index)
     {
-        Debug.Assert(!_ready[index]);
-        _ready[index] = true;
-    }
-
-    public struct Factory : ICompletionQueueFactory<CompletionQueueUnfairFewSources>
-    {
-        public CompletionQueueUnfairFewSources Create(int size)
-        {
-            return new CompletionQueueUnfairFewSources(size);
-        }
+        Debug.Assert(Volatile.Read(ref _ready[index]) == 0);
+        Volatile.Write(ref _ready[index], 1);
     }
 }
 
 internal readonly struct CompletionQueueUnfairManySources : ICompletionQueue
 {
+    private readonly object _lock = new();
     private readonly LinkedList<Entry> _readySorted;
     private readonly LinkedListNode<Entry>[] _ready;
 
-    public bool IsCompleted
+    public CompletionQueueUnfairManySources(int size)
     {
-        get
-        {
-            return _readySorted.First.Value.HasResult;
-        }
-    }
-
-    public int DrainCompletedIndex()
-    {
-        var node = _readySorted.First;
-        Debug.Assert(node.Value.HasResult);
-#if NET5_0_OR_GREATER
-                    ref var value = ref node.ValueRef;
-                    value.HasResult = false;
-#else
-        node.Value.HasResult = false; // signal that this node has a result
-#endif
-        _readySorted.RemoveFirst();
-        _readySorted.AddLast(node);
-        return node.Value.TaskIndex;
-    }
-
-    private CompletionQueueUnfairManySources(int size)
-    {
+        Size = size;
         _readySorted = new LinkedList<Entry>();
         _ready = new LinkedListNode<Entry>[size];
 
@@ -147,11 +246,52 @@ internal readonly struct CompletionQueueUnfairManySources : ICompletionQueue
         }
     }
 
-    public struct Factory : ICompletionQueueFactory<CompletionQueueUnfairManySources>
+    public int Size { get; }
+
+    public bool IsCompleted
     {
-        public CompletionQueueUnfairManySources Create(int size)
+        get
         {
-            return new CompletionQueueUnfairManySources(size);
+            lock (_lock)
+            {
+                return _readySorted.First.Value.HasResult;
+            }
+        }
+    }
+
+    public int DrainCompletedIndex()
+    {
+        lock (_lock)
+        {
+            var node = _readySorted.First;
+            Debug.Assert(node.Value.HasResult);
+#if NET5_0_OR_GREATER
+                    ref var value = ref node.ValueRef;
+                    value.HasResult = false;
+#else
+            node.Value.HasResult = false; // signal that this node has a result
+#endif
+            _readySorted.RemoveFirst();
+            _readySorted.AddLast(node);
+            return node.Value.TaskIndex;
+        }
+    }
+
+    public void OnCompleted(int index)
+    {
+        lock (_lock)
+        {
+            var node = _ready[index];
+
+#if NET5_0_OR_GREATER
+        ref var value = ref node.ValueRef;
+        value.HasResult = true;
+#else
+            node.Value.HasResult = true; // signal that this node has a result
+#endif
+
+            _readySorted.Remove(node);
+            _readySorted.AddFirst(node);
         }
     }
 
@@ -170,25 +310,9 @@ internal readonly struct CompletionQueueUnfairManySources : ICompletionQueue
             HasResult = false;
         }
     }
-
-    public void OnCompleted(int index)
-    {
-        var node = _ready[index];
-
-#if NET5_0_OR_GREATER
-        ref var value = ref node.ValueRef;
-        value.HasResult = true;
-#else
-        node.Value.HasResult = true; // signal that this node has a result
-#endif
-
-        _readySorted.Remove(node);
-        _readySorted.AddFirst(node);
-    }
 }
 
-internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQueueStrategy>
-    where TQueueStrategyFactory : struct, ICompletionQueueFactory<TQueueStrategy>
+internal sealed class MergeSourceCompletionListener<T, TQueueStrategy>
     where TQueueStrategy : struct, ICompletionQueue
 {
     /// <summary>
@@ -202,7 +326,6 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     private readonly Action[] _onReady;
 
     private TQueueStrategy _queueStrategy;
-    private readonly object _lock = new();
 
     /// <summary>
     /// Callback of the current awaiter, if any.
@@ -216,12 +339,15 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     /// Creates a when any task around the specified tasks.
     /// </summary>
     /// <param name="tasks">Initial set of tasks to await.</param>
-    public MergeSourceCompletionListener(ValueTask<T>[] tasks)
+    public MergeSourceCompletionListener(ValueTask<T>[] tasks, TQueueStrategy queueStrategy)
     {
+        if (queueStrategy.Size != tasks.Length)
+            throw new ArgumentException($"Queue strategy must be compatible for size {tasks.Length}", nameof(queueStrategy));
+
         _tasks = tasks;
 
         var n = tasks.Length;
-        _queueStrategy = new TQueueStrategyFactory().Create(n);
+        _queueStrategy = queueStrategy;
         _onReady = new Action[n];
 
         for (var i = 0; i < n; i++)
@@ -286,23 +412,8 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     /// <param name="index">The index of the completed task in <see cref="_tasks"/>.</param>
     private void OnReady(int index)
     {
-        Action onCompleted = null;
-
-        lock (_lock)
-        {
-            // Move node that is ready to the head of the list, and set its value to true to signify a result is available
-            _queueStrategy.OnCompleted(index);
-
-            // If there's a current awaiter, we'll steal its continuation action and invoke it. By setting
-            // the continuation action to null, we avoid waking up the same awaiter more than once. Any
-            // task completions that occur while no awaiter is active will end up being enqueued in _ready.
-            if (_onCompleted != null)
-            {
-                onCompleted = _onCompleted;
-                _onCompleted = null;
-            }
-        }
-
+        _queueStrategy.OnCompleted(index);
+        var onCompleted = Interlocked.Exchange(ref _onCompleted, null);
         onCompleted?.Invoke();
     }
 
@@ -312,10 +423,7 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     /// <returns><c>true</c> if any task has completed; otherwise, <c>false</c>.</returns>
     private bool IsCompleted()
     {
-        lock (_lock)
-        {
-            return _queueStrategy.IsCompleted;
-        }
+        return _queueStrategy.IsCompleted;
     }
 
     /// <summary>
@@ -326,11 +434,8 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     /// <returns>Index of the earliest task that has completed.</returns>
     private int GetResult()
     {
-        lock (_lock)
-        {
-            Debug.Assert(_queueStrategy.IsCompleted);
-            return _queueStrategy.DrainCompletedIndex();
-        }
+        Debug.Assert(_queueStrategy.IsCompleted);
+        return _queueStrategy.DrainCompletedIndex();
     }
 
     /// <summary>
@@ -339,41 +444,22 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     /// <param name="action">The continuation action delegate to call when any task is ready.</param>
     private void OnCompleted(Action action)
     {
-        bool shouldInvoke = false;
-
-        lock (_lock)
-        {
-            //
-            // Check if we have anything ready (which could happen in the short window between checking
-            // for IsCompleted and calling OnCompleted). If so, we should invoke the action directly. Not
-            // doing so would be a correctness issue where a task has completed, its index was enqueued,
-            // but the continuation was never called (unless another task completes and calls the action
-            // delegate, whose subsequent call to GetResult would pick up the lost index).
-            //
-
-            if (IsCompleted())
-            {
-                shouldInvoke = true;
-            }
-            else
-            {
-                Debug.Assert(_onCompleted == null, "Only a single awaiter is allowed.");
-
-                _onCompleted = action;
-            }
-        }
-
-        //
-        // NB: We assume this case is rare enough (IsCompleted and OnCompleted happen right after one
-        //     another, and an enqueue should have happened right in between to go from an empty to a
-        //     non-empty queue), so we don't run the risk of triggering a stack overflow due to
-        //     synchronous completion of the await operation (which may be in a loop that awaits the
-        //     current instance again).
-        //
-
-        if (shouldInvoke)
+        if (IsCompleted())
         {
             action();
+            return;
+        }
+
+        Volatile.Write(ref _onCompleted, action);
+        if (IsCompleted())
+        {
+            var onCompleted = Interlocked.Exchange(ref _onCompleted, null);
+            if (onCompleted != null)
+            {
+                Debug.Assert(IsCompleted());
+                Debug.Assert(ReferenceEquals(onCompleted, action));
+                onCompleted();
+            }
         }
     }
 
@@ -382,9 +468,9 @@ internal sealed class MergeSourceCompletionListener<T, TQueueStrategyFactory, TQ
     /// </summary>
     public struct Awaiter : INotifyCompletion
     {
-        private readonly MergeSourceCompletionListener<T, TQueueStrategyFactory, TQueueStrategy> _parent;
+        private readonly MergeSourceCompletionListener<T, TQueueStrategy> _parent;
 
-        public Awaiter(MergeSourceCompletionListener<T, TQueueStrategyFactory, TQueueStrategy> parent) => _parent = parent;
+        public Awaiter(MergeSourceCompletionListener<T, TQueueStrategy> parent) => _parent = parent;
 
         public bool IsCompleted => _parent.IsCompleted();
         public int GetResult() => _parent.GetResult();

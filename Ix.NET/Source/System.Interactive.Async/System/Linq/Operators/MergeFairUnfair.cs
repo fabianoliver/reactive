@@ -23,8 +23,8 @@ namespace System.Linq
         public static IAsyncEnumerable<TSource> MergeUnfair<TSource>(params IAsyncEnumerable<TSource>[] sources)
         {
             if(sources.Length <= 2)
-                return MergeBase<TSource, CompletionQueueUnfairFewSources.Factory, CompletionQueueUnfairFewSources>(sources);
-            return MergeBase<TSource, CompletionQueueUnfairManySources.Factory, CompletionQueueUnfairManySources>(sources);
+                return MergeBase(new CompletionQueueUnfairFewSources(sources.Length), sources);
+            return MergeBase(new CompletionQueueUnfairManySources(sources.Length), sources);
         }
 
         /// <summary>
@@ -37,19 +37,20 @@ namespace System.Linq
         /// <exception cref="ArgumentNullException"><paramref name="sources"/> == null.</exception>
         public static IAsyncEnumerable<TSource> MergeFair<TSource>(params IAsyncEnumerable<TSource>[] sources)
         {
-            return MergeBase<TSource, CompletionQueueFair.Factory, CompletionQueueFair>(sources);
+            if(sources.Length == 2)
+                return MergeBase(new CompletionQueueFairTwoSources(sources.Length), sources);
+            return MergeBase(new CompletionQueueFair(sources.Length), sources);
         }
 
-        private static IAsyncEnumerable<TSource> MergeBase<TSource, TQueueStrategyFactory, TQueueStrategy>(params IAsyncEnumerable<TSource>[] sources)
-            where TQueueStrategyFactory : struct, ICompletionQueueFactory<TQueueStrategy>
+        private static IAsyncEnumerable<TSource> MergeBase<TSource, TQueueStrategy>(TQueueStrategy queueStrategy, params IAsyncEnumerable<TSource>[] sources)
             where TQueueStrategy : struct, ICompletionQueue
         {
             if (sources == null)
                 throw Error.ArgumentNull(nameof(sources));
 
-            return Core(sources);
+            return Core(sources, queueStrategy);
 
-            static async IAsyncEnumerable<TSource> Core(IAsyncEnumerable<TSource>[] sources, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            static async IAsyncEnumerable<TSource> Core(IAsyncEnumerable<TSource>[] sources, TQueueStrategy queueStrategy, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
             //
             // This new implementation of Merge differs from the original one in a few ways:
             //
@@ -68,7 +69,7 @@ namespace System.Linq
                 var enumerators = new IAsyncEnumerator<TSource>[count];
                 var moveNextTasks = new ValueTask<bool>[count];
                 var errors = default(List<Exception>);
-                var whenAny = default(MergeSourceCompletionListener<bool, TQueueStrategyFactory, TQueueStrategy>);
+                var whenAny = default(MergeSourceCompletionListener<bool, TQueueStrategy>);
 
                 try
                 {
@@ -124,7 +125,7 @@ namespace System.Linq
                     }
 
                     active = count;
-                    whenAny = new MergeSourceCompletionListener<bool, TQueueStrategyFactory, TQueueStrategy>(moveNextTasks);
+                    whenAny = new MergeSourceCompletionListener<bool, TQueueStrategy>(moveNextTasks, queueStrategy);
                     whenAny.Start();
 
                     while (active > 0)

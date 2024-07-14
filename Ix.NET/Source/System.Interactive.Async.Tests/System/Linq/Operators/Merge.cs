@@ -5,7 +5,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
@@ -74,6 +73,7 @@ namespace Tests
         [InlineData(1)]
         [InlineData(2)]
         [InlineData(3)]
+        [InlineData(4)]
         public async Task CanMerge_SimpleSynchronousSequence(int nEnumerables)
         {
             var xs = Merge(Enumerable.Range(0, nEnumerables).Select(x => AsyncEnumerable.Range(x * 10, 2)).ToArray());

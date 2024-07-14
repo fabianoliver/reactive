@@ -7,18 +7,16 @@ using System.Threading.Tasks.Sources;
 
 using BenchmarkDotNet.Attributes;
 
-using NotImplementedException = System.NotImplementedException;
-
 #if CURRENT
 namespace Benchmarks.System.Interactive;
 
 [MemoryDiagnoser]
 public class MergeBenchmark
 {
-    [Params(2,3,4,8)] public int NSourceEnumerables { get; set; }
+    [Params(2, 4, 8)] public int NSourceEnumerables { get; set; }
     [Params(10_000, 1_000_000)] public int NElementsPerEnumerable { get; set; }
 
-    [Params(0, 0.5, 1.0)] public double PercentElementsAsync { get; set; }
+    [Params(0.0, 0.5 ,1.0)] public double RatioElementsAsync { get; set; }
 
 
     private IAsyncEnumerable<int>[] _source;
@@ -26,7 +24,7 @@ public class MergeBenchmark
     [IterationSetup]
     public void Setup()
     {
-        var nAsync = (int)(NElementsPerEnumerable * PercentElementsAsync);
+        var nAsync = (int)(NElementsPerEnumerable * RatioElementsAsync);
         var nSync = NElementsPerEnumerable - nAsync;
 
         _source = Enumerable.Range(0, NSourceEnumerables)
@@ -111,7 +109,7 @@ public class MergeBenchmark
             public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
             {
                 _core.OnCompleted(continuation, state, token, flags);
-                ThreadPool.QueueUserWorkItem(o => ((CompleteAsynchronouslyAfterAwaitingValueTaskSource)o!)._core.SetResult(true), this);
+                _core.SetResult(true);
             }
         }
     }
